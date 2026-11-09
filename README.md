@@ -23,7 +23,6 @@ A cada 6 horas
 ## Estrutura do repositório
 
 ```
-docs/        análise de fontes, requisitos, arquitetura e decisões
 workflows/   workflows do n8n prontos para importar
 scripts/     código dos nodes Code (nuuvem.js), testes e gerador dos workflows
 ```
@@ -56,13 +55,7 @@ node --test scripts/*.test.js       # testes do parser, filtros e validações
 node scripts/build-workflow.js      # regenera os JSONs em workflows/
 ```
 
-## Documentação
-
-- [Análise de fontes de dados](docs/01-fontes-de-dados.md)
-- [Levantamento de requisitos](docs/02-requisitos.md)
-- [Arquitetura](docs/03-arquitetura.md)
-- [Decisões do projeto](docs/04-decisoes.md)
-- [Segurança](SECURITY.md)
+Detalhes de segurança em [SECURITY.md](SECURITY.md).
 
 ## Stack
 
