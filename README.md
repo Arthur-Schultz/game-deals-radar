@@ -3,7 +3,8 @@
 Workflow em **n8n** que monitora promoções de jogos em lojas digitais, filtra as ofertas
 que realmente valem a pena e envia alertas automaticamente.
 
-> Status: **fase de planejamento** — definindo fonte de dados, destino e regras de filtro.
+> Status: **requisitos definidos**. Nuuvem → filtro por lista de desejos → Discord, a cada 6 horas.
+> Ver [decisões](docs/04-decisoes.md).
 
 ## Objetivo
 
@@ -26,9 +27,12 @@ scripts/     código usado nos nodes Code (JS) e utilitários
 - [Análise de fontes de dados](docs/01-fontes-de-dados.md)
 - [Levantamento de requisitos](docs/02-requisitos.md)
 - [Arquitetura proposta](docs/03-arquitetura.md)
+- [Decisões do projeto](docs/04-decisoes.md)
 
 ## Stack
 
 - [n8n](https://n8n.io) (self-hosted via Docker ou n8n Cloud)
 - JavaScript nos nodes Code
-- Fonte de dados e destino: a definir (ver docs)
+- Fonte: Nuuvem (scraping de HTML)
+- Destino: Discord (webhook)
+- Docker para rodar o n8n localmente
