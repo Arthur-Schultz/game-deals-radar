@@ -1,9 +1,16 @@
-# n8n local data / credentials
-.n8n/
-*.sqlite
+# Segredos
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+
+# Dados locais do n8n (contém credenciais e banco)
+.n8n/
+n8n_data/
+*.sqlite
+*.sqlite-journal
+credentials*.json
 
 # Node
 node_modules/
