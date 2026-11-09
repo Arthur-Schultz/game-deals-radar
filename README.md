@@ -1,54 +1,72 @@
 # 🎮 Game Deals Radar
 
-Workflow em **n8n** que monitora promoções de jogos em lojas digitais, filtra as ofertas
-que realmente valem a pena e envia alertas automaticamente.
+Workflow em **n8n** que monitora as promoções da **Nuuvem** a cada 6 horas e envia no
+**Discord** só as ofertas novas com **30% de desconto ou mais**, sem repetir alertas.
 
-> Status: **requisitos definidos**. Nuuvem → só promoções novas → Discord, a cada 6 horas.
-> Ver [decisões](docs/04-decisoes.md).
+## Como funciona
 
-## Objetivo
+```
+A cada 6 horas
+  → Config (desconto mínimo, limite de alertas)
+  → Buscar 1ª página → Planejar páginas (lê a paginação)
+  → Buscar páginas (1 a cada 10 s, respeitando o rate limit e o robots.txt)
+  → Extrair ofertas (parser em JS, valida links e preços)
+  → Filtrar novas ofertas (histórico salvo no n8n, sem duplicatas)
+  → Uma mensagem por jogo no Discord (embed com capa, preço antigo e novo)
+```
 
-- Coletar ofertas de jogos periodicamente (Schedule Trigger)
-- Normalizar os dados (título, preço original, preço promocional, % de desconto, loja, link)
-- Filtrar por regras configuráveis (desconto mínimo, preço máximo, plataforma)
-- Evitar alertas duplicados
-- Entregar as ofertas no destino escolhido (Discord / Telegram / Google Sheets / banco de dados)
+- **Primeira execução silenciosa:** só registra as promoções atuais; depois disso, avisa apenas as novas.
+- **Preço caiu de novo?** A oferta é reenviada.
+- **Até 20 alertas por execução**, priorizando os maiores descontos; o resto fica para a próxima.
+- **Alerta de erro:** um segundo workflow avisa no Discord se a coleta falhar.
 
 ## Estrutura do repositório
 
 ```
-docs/        decisões técnicas, análise de fontes e requisitos
-workflows/   exports JSON dos workflows do n8n
-scripts/     código usado nos nodes Code (JS) e utilitários
+docs/        análise de fontes, requisitos, arquitetura e decisões
+workflows/   workflows do n8n prontos para importar
+scripts/     código dos nodes Code (nuuvem.js), testes e gerador dos workflows
+```
+
+## Como rodar
+
+Pré-requisito: [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+
+1. Copie `.env.example` para `.env` e preencha a `N8N_ENCRYPTION_KEY`
+   (gere com `openssl rand -hex 32`). O `.env` nunca vai para o Git.
+2. Suba o n8n e abra http://localhost:5678 (crie a conta de dono com senha forte):
+   ```bash
+   docker compose up -d
+   ```
+3. Importe os dois arquivos de `workflows/` (menu do n8n → **Import from File**).
+4. No Discord, crie um webhook no canal (Configurações do canal → Integrações → Webhooks).
+5. No n8n, abra o node **"Enviar no Discord"**, crie uma credencial **Discord Webhook** com a URL
+   do webhook e use a mesma credencial no node **"Avisar no Discord"** do workflow de alerta.
+6. Publique o workflow de alerta, selecione-o em **Settings → Error workflow** do workflow
+   principal e publique o principal.
+
+Para parar: `docker compose down` (os dados ficam no volume `n8n_data`).
+
+## Desenvolvimento
+
+O código dos nodes Code fica em `scripts/nuuvem.js`, com testes:
+
+```bash
+node --test scripts/*.test.js       # testes do parser, filtros e validações
+node scripts/build-workflow.js      # regenera os JSONs em workflows/
 ```
 
 ## Documentação
 
 - [Análise de fontes de dados](docs/01-fontes-de-dados.md)
 - [Levantamento de requisitos](docs/02-requisitos.md)
-- [Arquitetura proposta](docs/03-arquitetura.md)
+- [Arquitetura](docs/03-arquitetura.md)
 - [Decisões do projeto](docs/04-decisoes.md)
 - [Segurança](SECURITY.md)
 
-## Configuração
-
-Pré-requisito: [Docker Desktop](https://www.docker.com/products/docker-desktop/).
-
-1. Copie `.env.example` para `.env` e preencha a `N8N_ENCRYPTION_KEY`
-   (gere com `openssl rand -hex 32`). O `.env` nunca vai para o Git.
-2. Suba o n8n:
-   ```bash
-   docker compose up -d
-   ```
-3. Abra http://localhost:5678 e crie a conta de dono com senha forte.
-4. Leia o [SECURITY.md](SECURITY.md) antes de exportar e commitar workflows.
-
-Para parar: `docker compose down` (os dados ficam no volume `n8n_data`).
-
 ## Stack
 
-- [n8n](https://n8n.io) (self-hosted via Docker ou n8n Cloud)
-- JavaScript nos nodes Code
-- Fonte: Nuuvem (scraping de HTML)
+- [n8n](https://n8n.io) self-hosted via Docker
+- JavaScript (nodes Code + testes com `node:test`)
+- Fonte: Nuuvem (scraping de HTML, preços em BRL)
 - Destino: Discord (webhook)
-- Docker para rodar o n8n localmente

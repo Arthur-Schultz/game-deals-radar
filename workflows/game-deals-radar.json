@@ -1,0 +1,349 @@
+{
+  "name": "Game Deals Radar — Nuuvem → Discord",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "name": "A cada 6 horas",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ajuste aqui o comportamento do workflow.\nreturn [{\n  json: {\n    baseUrl: 'https://www.nuuvem.com/br-pt/catalog/price/promo/sort/bestselling/sort-mode/desc',\n    descontoMinimo: 30,          // % mínimo para alertar\n    maxAlertasPorExecucao: 20,   // evita lotar o canal; o resto vai na próxima execução\n    maxPaginas: 49,              // robots.txt da Nuuvem libera até a página 49\n  },\n}];"
+      },
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.baseUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "game-deals-radar/1.0 (+https://github.com/Arthur-Schultz/game-deals-radar)"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "pt-BR,pt;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "name": "Buscar 1ª página",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Funções puras usadas nos nodes Code do workflow.\n * O mesmo código é colado nos nodes \"Extrair ofertas\" e \"Filtrar novas ofertas\"\n * (o n8n não importa arquivos locais); este arquivo existe para versionar e testar.\n *\n * Todo dado vindo do HTML da Nuuvem é tratado como NÃO confiável.\n */\n\nconst NUUVEM_HOST = 'nuuvem.com';\nconst MAX_TITULO = 200;\n// Caracteres de controle, invisíveis e de direção de texto.\nconst CONTROL_CHARS = new RegExp(\n  '[' +\n    [[0x00, 0x1f], [0x7f, 0x9f], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f]]\n      .map(([a, b]) => String.fromCharCode(a) + '-' + String.fromCharCode(b))\n      .join('') +\n    ']',\n  'g'\n);\n\n/** Decodifica as entidades HTML usadas em atributos. */\nfunction decodeEntities(str) {\n  return str\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;|&#x27;/g, \"'\")\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/&#(\\d+);/g, (_, n) => safeCodePoint(Number(n)))\n    .replace(/&#x([0-9a-f]+);/gi, (_, n) => safeCodePoint(parseInt(n, 16)))\n    .replace(/&amp;/g, '&');\n}\n\nfunction safeCodePoint(n) {\n  return Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '';\n}\n\n/** Lê o valor de um atributo dentro de uma tag (aspas duplas). */\nfunction attr(tag, name) {\n  const m = tag.match(new RegExp(`\\\\s${name}=\"([^\"]*)\"`));\n  return m ? decodeEntities(m[1]) : null;\n}\n\nfunction parseJsonSafe(str) {\n  try {\n    const v = JSON.parse(str);\n    return v && typeof v === 'object' ? v : null;\n  } catch {\n    return null;\n  }\n}\n\n/** Remove caracteres de controle, normaliza espaços e limita o tamanho. */\nfunction cleanText(value, max = MAX_TITULO) {\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(CONTROL_CHARS, '')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .slice(0, max);\n}\n\n/**\n * Aceita só https:// em nuuvem.com ou subdomínio. Retorna a URL normalizada\n * (sem query string nem fragmento) ou null.\n * Não usa a classe URL porque ela não existe no sandbox dos nodes Code do n8n.\n */\nfunction safeNuuvemUrl(value) {\n  if (typeof value !== 'string') return null;\n  let v = value.trim();\n  if (v.length === 0 || v.length > 2048) return null;\n  if (v.startsWith('/') && !v.startsWith('//')) v = 'https://www.nuuvem.com' + v;\n\n  // https://host[/caminho][?query][#fragmento]; \"@\" (credenciais) e \":\" (porta) são recusados.\n  const m = v.match(/^https:\\/\\/([^/?#@:\\s]+)(\\/[^?#\\s]*)?(?:[?#][^\\s]*)?$/i);\n  if (!m) return null;\n  const host = m[1].toLowerCase();\n  if (!/^[a-z0-9.-]+$/.test(host)) return null;\n  if (host !== NUUVEM_HOST && !host.endsWith('.' + NUUVEM_HOST)) return null;\n  const path = m[2] || '/';\n  if (/[\"'<>\\\\`]/.test(path)) return null;\n  return 'https://' + host + path;\n}\n\n/** Converte centavos (inteiro) em reais. Retorna null se inválido. */\nfunction centsToReais(cents) {\n  return Number.isInteger(cents) && cents > 0 && cents < 10_000_000 ? cents / 100 : null;\n}\n\n/**\n * Extrai as ofertas de uma página do catálogo da Nuuvem.\n * @param {string} html\n * @returns {Array<{id,titulo,link,imagem,precoOriginal,precoPromo,desconto,moeda}>}\n */\nfunction parseCatalogPage(html) {\n  if (typeof html !== 'string' || html.length === 0) return [];\n\n  const tagRe = /<a\\s[^>]*data-ga-events-product-data-param=\"[^\"]*\"[^>]*>/g;\n  const tags = [...html.matchAll(tagRe)];\n  const offers = [];\n\n  tags.forEach((match, i) => {\n    const start = match.index;\n    const end = i + 1 < tags.length ? tags[i + 1].index : Math.min(html.length, start + 20000);\n    const segment = html.slice(start, end);\n\n    const data = parseJsonSafe(attr(match[0], 'data-ga-events-product-data-param') || '');\n    if (!data) return;\n\n    const priceTag = segment.match(/<div[^>]*class=\"[^\"]*\\bproduct-price\\b[^\"]*\"[^>]*>/);\n    if (!priceTag) return;\n    const price = parseJsonSafe(attr(priceTag[0], 'data-price') || '');\n    const base = parseJsonSafe(attr(priceTag[0], 'data-base-price') || '');\n\n    const precoPromo = centsToReais(price && price.v);\n    const precoOriginal = centsToReais(base && base.v);\n    if (precoPromo === null || precoOriginal === null || precoPromo >= precoOriginal) return;\n\n    const id = cleanText(String(data.id || ''), 64);\n    const titulo = cleanText(data.name);\n    const link = safeNuuvemUrl(attr(match[0], 'href') || data.url);\n    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id) || !titulo || !link) return;\n\n    if (data.currency && data.currency !== 'BRL') return;\n    const imagem = safeNuuvemUrl(data.image_url);\n    const desconto = Math.round((1 - precoPromo / precoOriginal) * 100);\n\n    offers.push({\n      id,\n      titulo,\n      link,\n      imagem,\n      precoOriginal,\n      precoPromo,\n      desconto,\n      moeda: 'BRL',\n    });\n  });\n\n  return offers;\n}\n\n/** Descobre o número da última página do catálogo a partir dos links de paginação. */\nfunction lastPageNumber(html) {\n  if (typeof html !== 'string') return 1;\n  let max = 1;\n  for (const m of html.matchAll(/\\/page\\/(\\d{1,4})\"/g)) {\n    const n = Number(m[1]);\n    if (n > max) max = n;\n  }\n  return max;\n}\n\n/**\n * Decide o que enviar, usando o estado salvo entre execuções.\n * - Primeira execução: só registra (não envia nada).\n * - Envia ofertas novas, ou cujo preço caiu desde o último envio.\n * - Esquece ofertas que saíram da promoção (se voltarem, avisa de novo),\n *   exceto quando a coleta foi parcial (alguma página falhou).\n * - Respeita o limite por execução; o excedente fica para a próxima.\n */\nfunction selectNewOffers(offers, state, { descontoMinimo, maxAlertas, agora, parcial = false }) {\n  const enviados = state.enviados && typeof state.enviados === 'object' ? state.enviados : {};\n  const primeiraExecucao = !state.inicializado;\n\n  const elegiveis = offers.filter((o) => o.desconto >= descontoMinimo);\n  const vistos = new Set(offers.map((o) => o.id));\n\n  // Esquece o que não está mais em promoção. Numa coleta parcial não dá para\n  // saber se a oferta acabou ou só estava numa página que falhou.\n  if (!parcial) {\n    for (const id of Object.keys(enviados)) {\n      if (!vistos.has(id)) delete enviados[id];\n    }\n  }\n\n  const novos = elegiveis\n    .filter((o) => !(o.id in enviados) || o.precoPromo < enviados[o.id])\n    .sort((a, b) => b.desconto - a.desconto);\n\n  let paraEnviar;\n  if (primeiraExecucao) {\n    for (const o of elegiveis) enviados[o.id] = o.precoPromo;\n    paraEnviar = [];\n  } else {\n    paraEnviar = novos.slice(0, maxAlertas);\n    for (const o of paraEnviar) enviados[o.id] = o.precoPromo;\n  }\n\n  state.enviados = enviados;\n  state.inicializado = true;\n  state.ultimaExecucao = agora;\n\n  return { paraEnviar, pendentes: Math.max(0, novos.length - paraEnviar.length), primeiraExecucao };\n}\n\n/** Formata em reais (R$ 1.234,56) sem depender de Intl/ICU. */\nfunction brl(valor) {\n  const [inteiro, centavos] = valor.toFixed(2).split('.');\n  return 'R$ ' + inteiro.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.') + ',' + centavos;\n}\n\n/** Monta o embed do Discord. Embeds não notificam menções (@everyone etc.). */\nfunction buildEmbed(o) {\n  const embed = {\n    title: cleanText(o.titulo, 256),\n    url: o.link,\n    color: 0x1f8b4c,\n    description: `**-${o.desconto}%** · ~~${brl(o.precoOriginal)}~~ → **${brl(o.precoPromo)}**`,\n    footer: { text: 'Nuuvem · Game Deals Radar' },\n  };\n  if (o.imagem) embed.image = { url: o.imagem };\n  return embed;\n}\n\n// ---- lógica deste node ----\nconst cfg = $('Config').first().json;\nconst total = Math.min(lastPageNumber($input.first().json.data), cfg.maxPaginas, 49);\n// A página 1 já foi baixada; aqui saem só as seguintes.\n// (Se o catálogo tiver uma página só, ela é buscada de novo para o fluxo seguir.)\nconst paginas = [];\nfor (let p = 2; p <= total; p++) {\n  paginas.push({ json: { pagina: p, url: cfg.baseUrl + '/page/' + p } });\n}\nreturn paginas.length ? paginas : [{ json: { pagina: 1, url: cfg.baseUrl } }];\n"
+      },
+      "name": "Planejar páginas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 10
+      },
+      "name": "Pausa inicial",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        0
+      ],
+      "webhookId": "8b2e4f61-3c7d-4a9e-b5f0-1d6c2a8e7b34"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "game-deals-radar/1.0 (+https://github.com/Arthur-Schultz/game-deals-radar)"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "pt-BR,pt;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "data",
+              "neverError": true
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 10000
+            }
+          }
+        }
+      },
+      "name": "Buscar páginas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "retryOnFail": false,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Funções puras usadas nos nodes Code do workflow.\n * O mesmo código é colado nos nodes \"Extrair ofertas\" e \"Filtrar novas ofertas\"\n * (o n8n não importa arquivos locais); este arquivo existe para versionar e testar.\n *\n * Todo dado vindo do HTML da Nuuvem é tratado como NÃO confiável.\n */\n\nconst NUUVEM_HOST = 'nuuvem.com';\nconst MAX_TITULO = 200;\n// Caracteres de controle, invisíveis e de direção de texto.\nconst CONTROL_CHARS = new RegExp(\n  '[' +\n    [[0x00, 0x1f], [0x7f, 0x9f], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f]]\n      .map(([a, b]) => String.fromCharCode(a) + '-' + String.fromCharCode(b))\n      .join('') +\n    ']',\n  'g'\n);\n\n/** Decodifica as entidades HTML usadas em atributos. */\nfunction decodeEntities(str) {\n  return str\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;|&#x27;/g, \"'\")\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/&#(\\d+);/g, (_, n) => safeCodePoint(Number(n)))\n    .replace(/&#x([0-9a-f]+);/gi, (_, n) => safeCodePoint(parseInt(n, 16)))\n    .replace(/&amp;/g, '&');\n}\n\nfunction safeCodePoint(n) {\n  return Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '';\n}\n\n/** Lê o valor de um atributo dentro de uma tag (aspas duplas). */\nfunction attr(tag, name) {\n  const m = tag.match(new RegExp(`\\\\s${name}=\"([^\"]*)\"`));\n  return m ? decodeEntities(m[1]) : null;\n}\n\nfunction parseJsonSafe(str) {\n  try {\n    const v = JSON.parse(str);\n    return v && typeof v === 'object' ? v : null;\n  } catch {\n    return null;\n  }\n}\n\n/** Remove caracteres de controle, normaliza espaços e limita o tamanho. */\nfunction cleanText(value, max = MAX_TITULO) {\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(CONTROL_CHARS, '')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .slice(0, max);\n}\n\n/**\n * Aceita só https:// em nuuvem.com ou subdomínio. Retorna a URL normalizada\n * (sem query string nem fragmento) ou null.\n * Não usa a classe URL porque ela não existe no sandbox dos nodes Code do n8n.\n */\nfunction safeNuuvemUrl(value) {\n  if (typeof value !== 'string') return null;\n  let v = value.trim();\n  if (v.length === 0 || v.length > 2048) return null;\n  if (v.startsWith('/') && !v.startsWith('//')) v = 'https://www.nuuvem.com' + v;\n\n  // https://host[/caminho][?query][#fragmento]; \"@\" (credenciais) e \":\" (porta) são recusados.\n  const m = v.match(/^https:\\/\\/([^/?#@:\\s]+)(\\/[^?#\\s]*)?(?:[?#][^\\s]*)?$/i);\n  if (!m) return null;\n  const host = m[1].toLowerCase();\n  if (!/^[a-z0-9.-]+$/.test(host)) return null;\n  if (host !== NUUVEM_HOST && !host.endsWith('.' + NUUVEM_HOST)) return null;\n  const path = m[2] || '/';\n  if (/[\"'<>\\\\`]/.test(path)) return null;\n  return 'https://' + host + path;\n}\n\n/** Converte centavos (inteiro) em reais. Retorna null se inválido. */\nfunction centsToReais(cents) {\n  return Number.isInteger(cents) && cents > 0 && cents < 10_000_000 ? cents / 100 : null;\n}\n\n/**\n * Extrai as ofertas de uma página do catálogo da Nuuvem.\n * @param {string} html\n * @returns {Array<{id,titulo,link,imagem,precoOriginal,precoPromo,desconto,moeda}>}\n */\nfunction parseCatalogPage(html) {\n  if (typeof html !== 'string' || html.length === 0) return [];\n\n  const tagRe = /<a\\s[^>]*data-ga-events-product-data-param=\"[^\"]*\"[^>]*>/g;\n  const tags = [...html.matchAll(tagRe)];\n  const offers = [];\n\n  tags.forEach((match, i) => {\n    const start = match.index;\n    const end = i + 1 < tags.length ? tags[i + 1].index : Math.min(html.length, start + 20000);\n    const segment = html.slice(start, end);\n\n    const data = parseJsonSafe(attr(match[0], 'data-ga-events-product-data-param') || '');\n    if (!data) return;\n\n    const priceTag = segment.match(/<div[^>]*class=\"[^\"]*\\bproduct-price\\b[^\"]*\"[^>]*>/);\n    if (!priceTag) return;\n    const price = parseJsonSafe(attr(priceTag[0], 'data-price') || '');\n    const base = parseJsonSafe(attr(priceTag[0], 'data-base-price') || '');\n\n    const precoPromo = centsToReais(price && price.v);\n    const precoOriginal = centsToReais(base && base.v);\n    if (precoPromo === null || precoOriginal === null || precoPromo >= precoOriginal) return;\n\n    const id = cleanText(String(data.id || ''), 64);\n    const titulo = cleanText(data.name);\n    const link = safeNuuvemUrl(attr(match[0], 'href') || data.url);\n    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id) || !titulo || !link) return;\n\n    if (data.currency && data.currency !== 'BRL') return;\n    const imagem = safeNuuvemUrl(data.image_url);\n    const desconto = Math.round((1 - precoPromo / precoOriginal) * 100);\n\n    offers.push({\n      id,\n      titulo,\n      link,\n      imagem,\n      precoOriginal,\n      precoPromo,\n      desconto,\n      moeda: 'BRL',\n    });\n  });\n\n  return offers;\n}\n\n/** Descobre o número da última página do catálogo a partir dos links de paginação. */\nfunction lastPageNumber(html) {\n  if (typeof html !== 'string') return 1;\n  let max = 1;\n  for (const m of html.matchAll(/\\/page\\/(\\d{1,4})\"/g)) {\n    const n = Number(m[1]);\n    if (n > max) max = n;\n  }\n  return max;\n}\n\n/**\n * Decide o que enviar, usando o estado salvo entre execuções.\n * - Primeira execução: só registra (não envia nada).\n * - Envia ofertas novas, ou cujo preço caiu desde o último envio.\n * - Esquece ofertas que saíram da promoção (se voltarem, avisa de novo),\n *   exceto quando a coleta foi parcial (alguma página falhou).\n * - Respeita o limite por execução; o excedente fica para a próxima.\n */\nfunction selectNewOffers(offers, state, { descontoMinimo, maxAlertas, agora, parcial = false }) {\n  const enviados = state.enviados && typeof state.enviados === 'object' ? state.enviados : {};\n  const primeiraExecucao = !state.inicializado;\n\n  const elegiveis = offers.filter((o) => o.desconto >= descontoMinimo);\n  const vistos = new Set(offers.map((o) => o.id));\n\n  // Esquece o que não está mais em promoção. Numa coleta parcial não dá para\n  // saber se a oferta acabou ou só estava numa página que falhou.\n  if (!parcial) {\n    for (const id of Object.keys(enviados)) {\n      if (!vistos.has(id)) delete enviados[id];\n    }\n  }\n\n  const novos = elegiveis\n    .filter((o) => !(o.id in enviados) || o.precoPromo < enviados[o.id])\n    .sort((a, b) => b.desconto - a.desconto);\n\n  let paraEnviar;\n  if (primeiraExecucao) {\n    for (const o of elegiveis) enviados[o.id] = o.precoPromo;\n    paraEnviar = [];\n  } else {\n    paraEnviar = novos.slice(0, maxAlertas);\n    for (const o of paraEnviar) enviados[o.id] = o.precoPromo;\n  }\n\n  state.enviados = enviados;\n  state.inicializado = true;\n  state.ultimaExecucao = agora;\n\n  return { paraEnviar, pendentes: Math.max(0, novos.length - paraEnviar.length), primeiraExecucao };\n}\n\n/** Formata em reais (R$ 1.234,56) sem depender de Intl/ICU. */\nfunction brl(valor) {\n  const [inteiro, centavos] = valor.toFixed(2).split('.');\n  return 'R$ ' + inteiro.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.') + ',' + centavos;\n}\n\n/** Monta o embed do Discord. Embeds não notificam menções (@everyone etc.). */\nfunction buildEmbed(o) {\n  const embed = {\n    title: cleanText(o.titulo, 256),\n    url: o.link,\n    color: 0x1f8b4c,\n    description: `**-${o.desconto}%** · ~~${brl(o.precoOriginal)}~~ → **${brl(o.precoPromo)}**`,\n    footer: { text: 'Nuuvem · Game Deals Radar' },\n  };\n  if (o.imagem) embed.image = { url: o.imagem };\n  return embed;\n}\n\n// ---- lógica deste node ----\n// Página 1 (já baixada) + as demais. Uma página sem nenhuma oferta indica\n// erro (ex.: 429 por excesso de requisições) e marca a coleta como parcial.\nconst htmls = [$('Buscar 1ª página').first().json.data, ...$input.all().map((i) => i.json.data)];\nconst porId = new Map();\nlet paginasComFalha = 0;\nfor (const html of htmls) {\n  const ofertas = parseCatalogPage(html);\n  if (ofertas.length === 0) paginasComFalha++;\n  for (const oferta of ofertas) {\n    if (!porId.has(oferta.id)) porId.set(oferta.id, oferta);\n  }\n}\n// Se nada foi extraído, o layout do site provavelmente mudou (ou fomos bloqueados):\n// falha em vez de mexer no histórico de ofertas enviadas.\nif (porId.size === 0) {\n  throw new Error('Nenhuma oferta extraída da Nuuvem. O site bloqueou as requisições ou o layout mudou.');\n}\nreturn [{ json: { ofertas: [...porId.values()], paginas: htmls.length, paginasComFalha } }];\n"
+      },
+      "name": "Extrair ofertas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Funções puras usadas nos nodes Code do workflow.\n * O mesmo código é colado nos nodes \"Extrair ofertas\" e \"Filtrar novas ofertas\"\n * (o n8n não importa arquivos locais); este arquivo existe para versionar e testar.\n *\n * Todo dado vindo do HTML da Nuuvem é tratado como NÃO confiável.\n */\n\nconst NUUVEM_HOST = 'nuuvem.com';\nconst MAX_TITULO = 200;\n// Caracteres de controle, invisíveis e de direção de texto.\nconst CONTROL_CHARS = new RegExp(\n  '[' +\n    [[0x00, 0x1f], [0x7f, 0x9f], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f]]\n      .map(([a, b]) => String.fromCharCode(a) + '-' + String.fromCharCode(b))\n      .join('') +\n    ']',\n  'g'\n);\n\n/** Decodifica as entidades HTML usadas em atributos. */\nfunction decodeEntities(str) {\n  return str\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;|&#x27;/g, \"'\")\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/&#(\\d+);/g, (_, n) => safeCodePoint(Number(n)))\n    .replace(/&#x([0-9a-f]+);/gi, (_, n) => safeCodePoint(parseInt(n, 16)))\n    .replace(/&amp;/g, '&');\n}\n\nfunction safeCodePoint(n) {\n  return Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '';\n}\n\n/** Lê o valor de um atributo dentro de uma tag (aspas duplas). */\nfunction attr(tag, name) {\n  const m = tag.match(new RegExp(`\\\\s${name}=\"([^\"]*)\"`));\n  return m ? decodeEntities(m[1]) : null;\n}\n\nfunction parseJsonSafe(str) {\n  try {\n    const v = JSON.parse(str);\n    return v && typeof v === 'object' ? v : null;\n  } catch {\n    return null;\n  }\n}\n\n/** Remove caracteres de controle, normaliza espaços e limita o tamanho. */\nfunction cleanText(value, max = MAX_TITULO) {\n  if (typeof value !== 'string') return '';\n  return value\n    .replace(CONTROL_CHARS, '')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .slice(0, max);\n}\n\n/**\n * Aceita só https:// em nuuvem.com ou subdomínio. Retorna a URL normalizada\n * (sem query string nem fragmento) ou null.\n * Não usa a classe URL porque ela não existe no sandbox dos nodes Code do n8n.\n */\nfunction safeNuuvemUrl(value) {\n  if (typeof value !== 'string') return null;\n  let v = value.trim();\n  if (v.length === 0 || v.length > 2048) return null;\n  if (v.startsWith('/') && !v.startsWith('//')) v = 'https://www.nuuvem.com' + v;\n\n  // https://host[/caminho][?query][#fragmento]; \"@\" (credenciais) e \":\" (porta) são recusados.\n  const m = v.match(/^https:\\/\\/([^/?#@:\\s]+)(\\/[^?#\\s]*)?(?:[?#][^\\s]*)?$/i);\n  if (!m) return null;\n  const host = m[1].toLowerCase();\n  if (!/^[a-z0-9.-]+$/.test(host)) return null;\n  if (host !== NUUVEM_HOST && !host.endsWith('.' + NUUVEM_HOST)) return null;\n  const path = m[2] || '/';\n  if (/[\"'<>\\\\`]/.test(path)) return null;\n  return 'https://' + host + path;\n}\n\n/** Converte centavos (inteiro) em reais. Retorna null se inválido. */\nfunction centsToReais(cents) {\n  return Number.isInteger(cents) && cents > 0 && cents < 10_000_000 ? cents / 100 : null;\n}\n\n/**\n * Extrai as ofertas de uma página do catálogo da Nuuvem.\n * @param {string} html\n * @returns {Array<{id,titulo,link,imagem,precoOriginal,precoPromo,desconto,moeda}>}\n */\nfunction parseCatalogPage(html) {\n  if (typeof html !== 'string' || html.length === 0) return [];\n\n  const tagRe = /<a\\s[^>]*data-ga-events-product-data-param=\"[^\"]*\"[^>]*>/g;\n  const tags = [...html.matchAll(tagRe)];\n  const offers = [];\n\n  tags.forEach((match, i) => {\n    const start = match.index;\n    const end = i + 1 < tags.length ? tags[i + 1].index : Math.min(html.length, start + 20000);\n    const segment = html.slice(start, end);\n\n    const data = parseJsonSafe(attr(match[0], 'data-ga-events-product-data-param') || '');\n    if (!data) return;\n\n    const priceTag = segment.match(/<div[^>]*class=\"[^\"]*\\bproduct-price\\b[^\"]*\"[^>]*>/);\n    if (!priceTag) return;\n    const price = parseJsonSafe(attr(priceTag[0], 'data-price') || '');\n    const base = parseJsonSafe(attr(priceTag[0], 'data-base-price') || '');\n\n    const precoPromo = centsToReais(price && price.v);\n    const precoOriginal = centsToReais(base && base.v);\n    if (precoPromo === null || precoOriginal === null || precoPromo >= precoOriginal) return;\n\n    const id = cleanText(String(data.id || ''), 64);\n    const titulo = cleanText(data.name);\n    const link = safeNuuvemUrl(attr(match[0], 'href') || data.url);\n    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id) || !titulo || !link) return;\n\n    if (data.currency && data.currency !== 'BRL') return;\n    const imagem = safeNuuvemUrl(data.image_url);\n    const desconto = Math.round((1 - precoPromo / precoOriginal) * 100);\n\n    offers.push({\n      id,\n      titulo,\n      link,\n      imagem,\n      precoOriginal,\n      precoPromo,\n      desconto,\n      moeda: 'BRL',\n    });\n  });\n\n  return offers;\n}\n\n/** Descobre o número da última página do catálogo a partir dos links de paginação. */\nfunction lastPageNumber(html) {\n  if (typeof html !== 'string') return 1;\n  let max = 1;\n  for (const m of html.matchAll(/\\/page\\/(\\d{1,4})\"/g)) {\n    const n = Number(m[1]);\n    if (n > max) max = n;\n  }\n  return max;\n}\n\n/**\n * Decide o que enviar, usando o estado salvo entre execuções.\n * - Primeira execução: só registra (não envia nada).\n * - Envia ofertas novas, ou cujo preço caiu desde o último envio.\n * - Esquece ofertas que saíram da promoção (se voltarem, avisa de novo),\n *   exceto quando a coleta foi parcial (alguma página falhou).\n * - Respeita o limite por execução; o excedente fica para a próxima.\n */\nfunction selectNewOffers(offers, state, { descontoMinimo, maxAlertas, agora, parcial = false }) {\n  const enviados = state.enviados && typeof state.enviados === 'object' ? state.enviados : {};\n  const primeiraExecucao = !state.inicializado;\n\n  const elegiveis = offers.filter((o) => o.desconto >= descontoMinimo);\n  const vistos = new Set(offers.map((o) => o.id));\n\n  // Esquece o que não está mais em promoção. Numa coleta parcial não dá para\n  // saber se a oferta acabou ou só estava numa página que falhou.\n  if (!parcial) {\n    for (const id of Object.keys(enviados)) {\n      if (!vistos.has(id)) delete enviados[id];\n    }\n  }\n\n  const novos = elegiveis\n    .filter((o) => !(o.id in enviados) || o.precoPromo < enviados[o.id])\n    .sort((a, b) => b.desconto - a.desconto);\n\n  let paraEnviar;\n  if (primeiraExecucao) {\n    for (const o of elegiveis) enviados[o.id] = o.precoPromo;\n    paraEnviar = [];\n  } else {\n    paraEnviar = novos.slice(0, maxAlertas);\n    for (const o of paraEnviar) enviados[o.id] = o.precoPromo;\n  }\n\n  state.enviados = enviados;\n  state.inicializado = true;\n  state.ultimaExecucao = agora;\n\n  return { paraEnviar, pendentes: Math.max(0, novos.length - paraEnviar.length), primeiraExecucao };\n}\n\n/** Formata em reais (R$ 1.234,56) sem depender de Intl/ICU. */\nfunction brl(valor) {\n  const [inteiro, centavos] = valor.toFixed(2).split('.');\n  return 'R$ ' + inteiro.replace(/\\B(?=(\\d{3})+(?!\\d))/g, '.') + ',' + centavos;\n}\n\n/** Monta o embed do Discord. Embeds não notificam menções (@everyone etc.). */\nfunction buildEmbed(o) {\n  const embed = {\n    title: cleanText(o.titulo, 256),\n    url: o.link,\n    color: 0x1f8b4c,\n    description: `**-${o.desconto}%** · ~~${brl(o.precoOriginal)}~~ → **${brl(o.precoPromo)}**`,\n    footer: { text: 'Nuuvem · Game Deals Radar' },\n  };\n  if (o.imagem) embed.image = { url: o.imagem };\n  return embed;\n}\n\n// ---- lógica deste node ----\n// Histórico salvo entre execuções. Só é gravado em execuções automáticas\n// (workflow ativo); execuções manuais de teste não alteram o histórico.\nconst cfg = $('Config').first().json;\nconst estado = $getWorkflowStaticData('global');\nconst { ofertas, paginasComFalha } = $input.first().json;\nconst { paraEnviar } = selectNewOffers(ofertas, estado, {\n  descontoMinimo: cfg.descontoMinimo,\n  maxAlertas: cfg.maxAlertasPorExecucao,\n  agora: new Date().toISOString(),\n  parcial: paginasComFalha > 0,\n});\nreturn paraEnviar.map((oferta) => ({ json: { ...oferta, embed: buildEmbed(oferta) } }));\n"
+      },
+      "name": "Filtrar novas ofertas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "name": "Uma por vez",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "webhook",
+        "operation": "sendLegacy",
+        "content": "",
+        "options": {},
+        "embeds": {
+          "values": [
+            {
+              "inputMethod": "json",
+              "json": "={{ JSON.stringify($json.embed) }}"
+            }
+          ]
+        }
+      },
+      "name": "Enviar no Discord",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        100
+      ],
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "",
+          "name": "Discord Webhook"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 1.5
+      },
+      "name": "Pausa (rate limit)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2200,
+        100
+      ],
+      "webhookId": "5f1c2c7e-6a8b-4c55-9f3e-2b0d7c1a9e41"
+    }
+  ],
+  "connections": {
+    "A cada 6 horas": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Buscar 1ª página",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar 1ª página": {
+      "main": [
+        [
+          {
+            "node": "Planejar páginas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planejar páginas": {
+      "main": [
+        [
+          {
+            "node": "Pausa inicial",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pausa inicial": {
+      "main": [
+        [
+          {
+            "node": "Buscar páginas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar páginas": {
+      "main": [
+        [
+          {
+            "node": "Extrair ofertas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair ofertas": {
+      "main": [
+        [
+          {
+            "node": "Filtrar novas ofertas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtrar novas ofertas": {
+      "main": [
+        [
+          {
+            "node": "Uma por vez",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uma por vez": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Enviar no Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar no Discord": {
+      "main": [
+        [
+          {
+            "node": "Pausa (rate limit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pausa (rate limit)": {
+      "main": [
+        [
+          {
+            "node": "Uma por vez",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {}
+}

@@ -11,8 +11,8 @@ Medidas adotadas neste projeto e regras para quem for contribuir.
   então o JSON exportado do workflow não contém a URL e pode ir para o GitHub.
 - Os workflows **não têm acesso às variáveis de ambiente** (`N8N_BLOCK_ENV_ACCESS_IN_NODE=true`),
   então nenhum node consegue ler a chave de criptografia.
-- Antes de commitar um workflow exportado, conferir que ele não contém `discord.com/api/webhooks`
-  nem tokens: `grep -ri "webhooks/\|token\|password" workflows/` deve voltar vazio.
+- Antes de commitar um workflow, conferir que ele não contém URL de webhook:
+  `grep -riE "discord(app)?\.com/api/webhooks" workflows/` deve voltar vazio.
 - Se um webhook vazar, **apague-o no Discord** (Configurações do canal → Integrações) e crie outro.
   Remover o commit não basta: o histórico do Git e forks continuam com a URL.
 
@@ -33,10 +33,11 @@ Medidas adotadas neste projeto e regras para quem for contribuir.
 
 Todo texto extraído do site é tratado como não confiável:
 
-- **Menções bloqueadas no Discord:** as mensagens são enviadas com
-  `allowed_mentions: { parse: [] }`, então um título como `@everyone` não notifica ninguém.
+- **Sem menções no Discord:** as mensagens usam só embed (sem `content`), e embeds nunca
+  notificam menções, então um título como `@everyone` não avisa ninguém.
 - **Links validados:** só são aceitos links `https://` cujo domínio seja `nuuvem.com`
-  (ou subdomínio). Qualquer outro link é descartado.
+  (ou subdomínio), sem credenciais, porta ou aspas; query string e fragmento são removidos.
+  Qualquer outro link é descartado.
 - **Imagens validadas** com a mesma regra de `https://`.
 - **Texto limitado:** títulos são cortados nos limites do Discord e caracteres de controle removidos.
 - **Preços validados:** só números finitos e positivos; oferta com preço inválido é ignorada.
@@ -44,7 +45,8 @@ Todo texto extraído do site é tratado como não confiável:
 
 ## Scraping responsável
 
-- Uma execução a cada 6 horas, poucas páginas por execução, timeout e no máximo 3 tentativas.
+- Uma execução a cada 6 horas, 10 segundos entre páginas, timeout de 30 s e User-Agent
+  identificando o projeto.
 - Respeitar o `robots.txt` e os termos de uso da Nuuvem. Não contornar captcha nem proteção anti-bot.
 
 ## Reportar um problema
