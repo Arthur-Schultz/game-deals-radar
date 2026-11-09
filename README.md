@@ -28,6 +28,12 @@ scripts/     código usado nos nodes Code (JS) e utilitários
 - [Levantamento de requisitos](docs/02-requisitos.md)
 - [Arquitetura proposta](docs/03-arquitetura.md)
 - [Decisões do projeto](docs/04-decisoes.md)
+- [Segurança](SECURITY.md)
+
+## Configuração
+
+1. Copie `.env.example` para `.env` e preencha (o `.env` nunca vai para o Git).
+2. Leia o [SECURITY.md](SECURITY.md) antes de exportar e commitar workflows.
 
 ## Stack
 
