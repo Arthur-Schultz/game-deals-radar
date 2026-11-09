@@ -32,8 +32,18 @@ scripts/     código usado nos nodes Code (JS) e utilitários
 
 ## Configuração
 
-1. Copie `.env.example` para `.env` e preencha (o `.env` nunca vai para o Git).
-2. Leia o [SECURITY.md](SECURITY.md) antes de exportar e commitar workflows.
+Pré-requisito: [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+
+1. Copie `.env.example` para `.env` e preencha a `N8N_ENCRYPTION_KEY`
+   (gere com `openssl rand -hex 32`). O `.env` nunca vai para o Git.
+2. Suba o n8n:
+   ```bash
+   docker compose up -d
+   ```
+3. Abra http://localhost:5678 e crie a conta de dono com senha forte.
+4. Leia o [SECURITY.md](SECURITY.md) antes de exportar e commitar workflows.
+
+Para parar: `docker compose down` (os dados ficam no volume `n8n_data`).
 
 ## Stack
 
