@@ -1,0 +1,15 @@
+# n8n local data / credentials
+.n8n/
+*.sqlite
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
