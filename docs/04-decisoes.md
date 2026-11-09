@@ -21,8 +21,8 @@ Respostas ao [levantamento de requisitos](02-requisitos.md), registradas em 09/1
   Para não lotar o canal:
   - **Primeira execução silenciosa:** só registra as ofertas atuais, sem enviar nada.
     Daí em diante, só chegam promoções novas.
-  - **Limite por execução:** no máximo `MAX_ALERTAS_POR_EXECUCAO` mensagens (padrão 20);
-    o restante fica para a próxima execução.
+  - **Limite por execução:** no máximo `maxAlertasPorExecucao` mensagens (padrão 20,
+    configurável no node "Config" do workflow); o restante fica para a próxima execução.
 - **Deduplicação:** `$getWorkflowStaticData('global')` guardando `id + preço`.
   Se o preço cair de novo, a oferta é reenviada.
 - **Discord:** pausa curta entre mensagens para respeitar o rate limit do webhook.
