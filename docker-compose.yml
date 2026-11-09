@@ -1,5 +1,5 @@
 # n8n local para o Game Deals Radar.
-# Uso:  cp .env.example .env  (preencha)  →  docker compose up -d  →  http://localhost:5679
+# Uso:  cp .env.example .env  (preencha)  →  docker compose up -d  →  http://localhost:5678
 
 services:
   n8n:
@@ -9,9 +9,8 @@ services:
     restart: unless-stopped
 
     # Só acessível no próprio PC. Nunca remova o "127.0.0.1:" (abriria para a rede).
-    # Porta 5679 no PC para não conflitar com outra instância do n8n na 5678.
     ports:
-      - "127.0.0.1:${N8N_HOST_PORT:-5679}:5678"
+      - "127.0.0.1:${N8N_HOST_PORT:-5678}:5678"
 
     environment:
       # Obrigatória: sem ela o compose não sobe (evita chave aleatória perdida).
