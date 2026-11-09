@@ -1,14 +1,6 @@
-/**
- * Funções puras usadas nos nodes Code do workflow.
- * O mesmo código é colado nos nodes "Extrair ofertas" e "Filtrar novas ofertas"
- * (o n8n não importa arquivos locais); este arquivo existe para versionar e testar.
- *
- * Todo dado vindo do HTML da Nuuvem é tratado como NÃO confiável.
- */
 
 const NUUVEM_HOST = 'nuuvem.com';
 const MAX_TITULO = 200;
-// Caracteres de controle, invisíveis e de direção de texto.
 const CONTROL_CHARS = new RegExp(
   '[' +
     [[0x00, 0x1f], [0x7f, 0x9f], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f]]
@@ -18,7 +10,6 @@ const CONTROL_CHARS = new RegExp(
   'g'
 );
 
-/** Decodifica as entidades HTML usadas em atributos. */
 function decodeEntities(str) {
   return str
     .replace(/&quot;/g, '"')
@@ -34,7 +25,6 @@ function safeCodePoint(n) {
   return Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '';
 }
 
-/** Lê o valor de um atributo dentro de uma tag (aspas duplas). */
 function attr(tag, name) {
   const m = tag.match(new RegExp(`\\s${name}="([^"]*)"`));
   return m ? decodeEntities(m[1]) : null;
@@ -49,7 +39,6 @@ function parseJsonSafe(str) {
   }
 }
 
-/** Remove caracteres de controle, normaliza espaços e limita o tamanho. */
 function cleanText(value, max = MAX_TITULO) {
   if (typeof value !== 'string') return '';
   return value
@@ -59,18 +48,12 @@ function cleanText(value, max = MAX_TITULO) {
     .slice(0, max);
 }
 
-/**
- * Aceita só https:// em nuuvem.com ou subdomínio. Retorna a URL normalizada
- * (sem query string nem fragmento) ou null.
- * Não usa a classe URL porque ela não existe no sandbox dos nodes Code do n8n.
- */
 function safeNuuvemUrl(value) {
   if (typeof value !== 'string') return null;
   let v = value.trim();
   if (v.length === 0 || v.length > 2048) return null;
   if (v.startsWith('/') && !v.startsWith('//')) v = 'https://www.nuuvem.com' + v;
 
-  // https://host[/caminho][?query][#fragmento]; "@" (credenciais) e ":" (porta) são recusados.
   const m = v.match(/^https:\/\/([^/?#@:\s]+)(\/[^?#\s]*)?(?:[?#][^\s]*)?$/i);
   if (!m) return null;
   const host = m[1].toLowerCase();
@@ -81,16 +64,10 @@ function safeNuuvemUrl(value) {
   return 'https://' + host + path;
 }
 
-/** Converte centavos (inteiro) em reais. Retorna null se inválido. */
 function centsToReais(cents) {
   return Number.isInteger(cents) && cents > 0 && cents < 10_000_000 ? cents / 100 : null;
 }
 
-/**
- * Extrai as ofertas de uma página do catálogo da Nuuvem.
- * @param {string} html
- * @returns {Array<{id,titulo,link,imagem,precoOriginal,precoPromo,desconto,moeda}>}
- */
 function parseCatalogPage(html) {
   if (typeof html !== 'string' || html.length === 0) return [];
 
@@ -139,7 +116,6 @@ function parseCatalogPage(html) {
   return offers;
 }
 
-/** Descobre o número da última página do catálogo a partir dos links de paginação. */
 function lastPageNumber(html) {
   if (typeof html !== 'string') return 1;
   let max = 1;
@@ -150,23 +126,13 @@ function lastPageNumber(html) {
   return max;
 }
 
-/**
- * Decide o que enviar, usando o estado salvo entre execuções.
- * - Primeira execução: só registra (não envia nada).
- * - Envia ofertas novas, ou cujo preço caiu desde o último envio.
- * - Esquece ofertas que saíram da promoção (se voltarem, avisa de novo),
- *   exceto quando a coleta foi parcial (alguma página falhou).
- * - Respeita o limite por execução; o excedente fica para a próxima.
- */
-function selectNewOffers(offers, state, { descontoMinimo, maxAlertas, agora, parcial = false }) {
+function selectNewOffers(offers, state, { descontoMinimo, maxAlertas, agora, parcial = false, silenciarPrimeira = true }) {
   const enviados = state.enviados && typeof state.enviados === 'object' ? state.enviados : {};
   const primeiraExecucao = !state.inicializado;
 
   const elegiveis = offers.filter((o) => o.desconto >= descontoMinimo);
   const vistos = new Set(offers.map((o) => o.id));
 
-  // Esquece o que não está mais em promoção. Numa coleta parcial não dá para
-  // saber se a oferta acabou ou só estava numa página que falhou.
   if (!parcial) {
     for (const id of Object.keys(enviados)) {
       if (!vistos.has(id)) delete enviados[id];
@@ -178,7 +144,7 @@ function selectNewOffers(offers, state, { descontoMinimo, maxAlertas, agora, par
     .sort((a, b) => b.desconto - a.desconto);
 
   let paraEnviar;
-  if (primeiraExecucao) {
+  if (primeiraExecucao && silenciarPrimeira) {
     for (const o of elegiveis) enviados[o.id] = o.precoPromo;
     paraEnviar = [];
   } else {
@@ -193,13 +159,11 @@ function selectNewOffers(offers, state, { descontoMinimo, maxAlertas, agora, par
   return { paraEnviar, pendentes: Math.max(0, novos.length - paraEnviar.length), primeiraExecucao };
 }
 
-/** Formata em reais (R$ 1.234,56) sem depender de Intl/ICU. */
 function brl(valor) {
   const [inteiro, centavos] = valor.toFixed(2).split('.');
   return 'R$ ' + inteiro.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ',' + centavos;
 }
 
-/** Monta o embed do Discord. Embeds não notificam menções (@everyone etc.). */
 function buildEmbed(o) {
   const embed = {
     title: cleanText(o.titulo, 256),
@@ -208,7 +172,7 @@ function buildEmbed(o) {
     description: `**-${o.desconto}%** · ~~${brl(o.precoOriginal)}~~ → **${brl(o.precoPromo)}**`,
     footer: { text: 'Nuuvem · Game Deals Radar' },
   };
-  if (o.imagem) embed.image = { url: o.imagem };
+  if (o.imagem) embed.image = o.imagem;
   return embed;
 }
 

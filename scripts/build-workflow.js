@@ -1,6 +1,3 @@
-// Gera os JSONs de workflow em workflows/ a partir de scripts/nuuvem.js,
-// para o código dos nodes Code ser o mesmo que está testado.
-// Uso: node scripts/build-workflow.js
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -12,7 +9,7 @@ const lib = fs
 
 const USER_AGENT = 'game-deals-radar/1.0 (+https://github.com/Arthur-Schultz/game-deals-radar)';
 
-const code = (body) => `${lib}\n\n// ---- lógica deste node ----\n${body.trim()}\n`;
+const code = (body) => `${lib}\n\n${body.trim()}\n`;
 
 const httpNode = (name, url, position, extra = {}) => ({
   parameters: {
@@ -66,13 +63,13 @@ const main = {
     },
     {
       parameters: {
-        jsCode: `// Ajuste aqui o comportamento do workflow.
-return [{
+        jsCode: `return [{
   json: {
     baseUrl: 'https://www.nuuvem.com/br-pt/catalog/price/promo/sort/bestselling/sort-mode/desc',
-    descontoMinimo: 30,          // % mínimo para alertar
-    maxAlertasPorExecucao: 20,   // evita lotar o canal; o resto vai na próxima execução
-    maxPaginas: 49,              // robots.txt da Nuuvem libera até a página 49
+    descontoMinimo: 30,
+    maxAlertasPorExecucao: 20,
+    maxPaginas: 49,
+    silenciarPrimeiraExecucao: true,
   },
 }];`,
       },
@@ -87,8 +84,6 @@ return [{
         jsCode: code(`
 const cfg = $('Config').first().json;
 const total = Math.min(lastPageNumber($input.first().json.data), cfg.maxPaginas, 49);
-// A página 1 já foi baixada; aqui saem só as seguintes.
-// (Se o catálogo tiver uma página só, ela é buscada de novo para o fluxo seguir.)
 const paginas = [];
 for (let p = 2; p <= total; p++) {
   paginas.push({ json: { pagina: p, url: cfg.baseUrl + '/page/' + p } });
@@ -118,8 +113,6 @@ return paginas.length ? paginas : [{ json: { pagina: 1, url: cfg.baseUrl } }];`)
     {
       parameters: {
         jsCode: code(`
-// Página 1 (já baixada) + as demais. Uma página sem nenhuma oferta indica
-// erro (ex.: 429 por excesso de requisições) e marca a coleta como parcial.
 const htmls = [$('Buscar 1ª página').first().json.data, ...$input.all().map((i) => i.json.data)];
 const porId = new Map();
 let paginasComFalha = 0;
@@ -130,8 +123,6 @@ for (const html of htmls) {
     if (!porId.has(oferta.id)) porId.set(oferta.id, oferta);
   }
 }
-// Se nada foi extraído, o layout do site provavelmente mudou (ou fomos bloqueados):
-// falha em vez de mexer no histórico de ofertas enviadas.
 if (porId.size === 0) {
   throw new Error('Nenhuma oferta extraída da Nuuvem. O site bloqueou as requisições ou o layout mudou.');
 }
@@ -145,8 +136,6 @@ return [{ json: { ofertas: [...porId.values()], paginas: htmls.length, paginasCo
     {
       parameters: {
         jsCode: code(`
-// Histórico salvo entre execuções. Só é gravado em execuções automáticas
-// (workflow ativo); execuções manuais de teste não alteram o histórico.
 const cfg = $('Config').first().json;
 const estado = $getWorkflowStaticData('global');
 const { ofertas, paginasComFalha } = $input.first().json;
@@ -155,6 +144,7 @@ const { paraEnviar } = selectNewOffers(ofertas, estado, {
   maxAlertas: cfg.maxAlertasPorExecucao,
   agora: new Date().toISOString(),
   parcial: paginasComFalha > 0,
+  silenciarPrimeira: cfg.silenciarPrimeiraExecucao !== false,
 });
 return paraEnviar.map((oferta) => ({ json: { ...oferta, embed: buildEmbed(oferta) } }));`),
       },

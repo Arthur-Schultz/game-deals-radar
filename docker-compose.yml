@@ -1,19 +1,13 @@
-# n8n local para o Game Deals Radar.
-# Uso:  cp .env.example .env  (preencha)  →  docker compose up -d  →  http://localhost:5678
-
 services:
   n8n:
-    # Fixe uma versão no .env (N8N_VERSION) para builds reprodutíveis.
     image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-latest}
     container_name: game-deals-radar-n8n
     restart: unless-stopped
 
-    # Só acessível no próprio PC. Nunca remova o "127.0.0.1:" (abriria para a rede).
     ports:
       - "127.0.0.1:${N8N_HOST_PORT:-5678}:5678"
 
     environment:
-      # Obrigatória: sem ela o compose não sobe (evita chave aleatória perdida).
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?Defina N8N_ENCRYPTION_KEY no .env}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-America/Sao_Paulo}
       TZ: ${GENERIC_TIMEZONE:-America/Sao_Paulo}
@@ -22,17 +16,15 @@ services:
       N8N_PORT: "5678"
       N8N_PROTOCOL: http
 
-      # Endurecimento
-      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"        # workflows não leem variáveis de ambiente
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
-      N8N_RUNNERS_ENABLED: "true"                 # código dos nodes Code roda isolado
-      N8N_DIAGNOSTICS_ENABLED: "false"            # sem telemetria
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_PERSONALIZATION_ENABLED: "false"
       N8N_HIRING_BANNER_ENABLED: "false"
 
-      # Limpa execuções antigas para o banco não crescer sem fim
       EXECUTIONS_DATA_PRUNE: "true"
-      EXECUTIONS_DATA_MAX_AGE: "168"              # horas (7 dias)
+      EXECUTIONS_DATA_MAX_AGE: "168"
 
     volumes:
       - n8n_data:/home/node/.n8n

@@ -1,4 +1,3 @@
-// Testes das funções do workflow. Rode com: node --test scripts/*.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -11,7 +10,6 @@ const {
   buildEmbed,
 } = require('./nuuvem');
 
-// HTML sintético no mesmo formato do catálogo da Nuuvem.
 function card({ id, name, href, image, price, base, currency = 'BRL' }) {
   const ga = JSON.stringify({ id, name, price: price / 100, url: href, image_url: image, currency })
     .replace(/&/g, '&amp;')
@@ -40,7 +38,7 @@ test('extrai ofertas válidas com preços em centavos', () => {
   assert.equal(o.precoPromo, 19.9);
   assert.equal(o.precoOriginal, 39.9);
   assert.equal(o.desconto, 50);
-  assert.equal(o.link, 'https://www.nuuvem.com/br-pt/item/jogo-a'); // sem query de rastreamento
+  assert.equal(o.link, 'https://www.nuuvem.com/br-pt/item/jogo-a');
   assert.equal(o.imagem, IMG);
 });
 
@@ -127,9 +125,9 @@ test('envia só novas, com desconto mínimo, e respeita o limite', () => {
     state,
     cfg
   );
-  assert.deepEqual(r.paraEnviar.map((o) => o.id), ['d', 'c']); // maiores descontos primeiro
-  assert.equal(r.pendentes, 1); // 'e' fica para a próxima
-  assert.ok(!('b' in state.enviados)); // abaixo de 30% é ignorado
+  assert.deepEqual(r.paraEnviar.map((o) => o.id), ['d', 'c']);
+  assert.equal(r.pendentes, 1);
+  assert.ok(!('b' in state.enviados));
 });
 
 test('reenvia se o preço cair e esquece o que saiu da promoção', () => {
@@ -149,4 +147,10 @@ test('coleta parcial não apaga o histórico', () => {
   const state = { inicializado: true, enviados: { a: 50, b: 40 } };
   selectNewOffers([oferta('a', 50, 50)], state, { ...cfg, parcial: true });
   assert.equal(state.enviados.b, 40);
+});
+
+test('primeira execução pode enviar se o silêncio estiver desligado', () => {
+  const state = {};
+  const r = selectNewOffers([oferta('a', 50, 50), oferta('b', 10, 90)], state, { ...cfg, silenciarPrimeira: false });
+  assert.deepEqual(r.paraEnviar.map((o) => o.id), ['a']);
 });
