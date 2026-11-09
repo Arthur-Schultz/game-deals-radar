@@ -3,7 +3,7 @@
 Workflow em **n8n** que monitora promoções de jogos em lojas digitais, filtra as ofertas
 que realmente valem a pena e envia alertas automaticamente.
 
-> Status: **requisitos definidos**. Nuuvem → filtro por lista de desejos → Discord, a cada 6 horas.
+> Status: **requisitos definidos**. Nuuvem → só promoções novas → Discord, a cada 6 horas.
 > Ver [decisões](docs/04-decisoes.md).
 
 ## Objetivo
