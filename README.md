@@ -40,7 +40,7 @@ Pré-requisito: [Docker Desktop](https://www.docker.com/products/docker-desktop/
    ```bash
    docker compose up -d
    ```
-3. Abra http://localhost:5678 e crie a conta de dono com senha forte.
+3. Abra http://localhost:5679 e crie a conta de dono com senha forte.
 4. Leia o [SECURITY.md](SECURITY.md) antes de exportar e commitar workflows.
 
 Para parar: `docker compose down` (os dados ficam no volume `n8n_data`).
